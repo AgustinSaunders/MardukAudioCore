@@ -1,7 +1,12 @@
 package processors;
 
 public class GainProcessor implements AudioProcessor {
-    private volatile float gain = 1.0f;
+
+    private volatile float gain;
+
+    public GainProcessor(float initialGain) {
+        this.gain =initialGain;
+    }
 
     public void setGain(float gain) {
         this.gain = gain;
