@@ -1,26 +1,39 @@
 package utils;
 
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
+
 public class AudioUtils {
-    // Convert bytes (16-bit PCM) to floats (-1.0 a 1.0)
-    public static void bytesToFloats(byte[] input, float[] output, int bytesRead, boolean isBigEndian) {
-        for (int i = 0, j = 0; i < bytesRead; i += 2, j++) {
-            int sample = isBigEndian
-                    ? (input[i] << 8) | (input[i + 1] & 0xFF)
-                    : (input[i + 1] << 8) | (input[i] & 0xFF);
-            output[j] = sample / 32768.0f;
+
+    public static void bytesToFloats(byte[] input, float[] output, int bytesRead, int bitDepth, boolean isBigEndian) {
+        ByteBuffer bb = ByteBuffer.wrap(input, 0, bytesRead);
+        bb.order(isBigEndian ? ByteOrder.BIG_ENDIAN : ByteOrder.LITTLE_ENDIAN);
+
+        int sampleCount = bytesRead / (bitDepth / 8);
+
+        for (int i = 0; i < sampleCount; i++) {
+            if (bitDepth == 32) {
+                // 32-bit PCM_FLOAT: already comes in a -1.0 to 1.0 range
+                output[i] = bb.getFloat();
+            } else {
+                // 16-bit PCM_SIGNED: convert from short (-32768 to 32767) to float
+                output[i] = bb.getShort() / 32768.0f;
+            }
         }
     }
 
-    // Convert floats (-1.0 a 1.0) back to bytes (16-bit PCM)
-    public static void floatsToBytes(float[] input, byte[] output, int samplesCount, boolean isBigEndian) {
+
+    public static void floatsToBytes(float[] input, byte[] output, int samplesCount, int bitDepth, boolean isBigEndian) {
+        ByteBuffer bb = ByteBuffer.wrap(output);
+        bb.order(isBigEndian ? ByteOrder.BIG_ENDIAN : ByteOrder.LITTLE_ENDIAN);
+
         for (int i = 0; i < samplesCount; i++) {
-            short s = (short) (input[i] * 32767.0f);
-            if (isBigEndian) {
-                output[i * 2] = (byte) (s >> 8);
-                output[i * 2 + 1] = (byte) (s & 0xFF);
+            float sample = Math.max(-1.0f, Math.min(1.0f, input[i]));
+
+            if (bitDepth == 32) {
+                bb.putFloat(sample);
             } else {
-                output[i * 2] = (byte) (s & 0xFF);
-                output[i * 2 + 1] = (byte) (s >> 8);
+                bb.putShort((short) (sample * 32767.0f));
             }
         }
     }

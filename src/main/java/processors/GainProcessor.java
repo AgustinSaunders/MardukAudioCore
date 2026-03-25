@@ -12,14 +12,20 @@ public class GainProcessor implements AudioProcessor {
         this.gain = gain;
     }
 
+    public float getGain(){
+        return gain;
+    }
+
+    public void process(float[] samples, int sampleCount) {
+        float currentGain = this.gain; // volumen actual (0.0 a 1.0)
+
+        for (int i = 0; i < sampleCount; i++) {
+            samples[i] = samples[i] * currentGain;
+        }
+    }
+
     @Override
     public void process(float[] samples) {
-        for (int i = 0; i < samples.length; i++) {
-            samples[i] *= gain;
 
-            // Hard Clipping/limiter
-            if (samples[i] > 1.0f) samples[i] = 1.0f;
-            if (samples[i] < -1.0f) samples[i] = -1.0f;
-        }
     }
 }

@@ -1,15 +1,21 @@
-import engine.AudioEngine32Bit;
-import processors.GainProcessor;
+import utils.FileLoader;
+import utils.Player;
+
+import javax.sound.sampled.*;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.IOException;
+import java.util.Scanner;
+
 
 public class Main {
     public static void main(String[] args) {
-        GainProcessor gain = new GainProcessor(0.5f);
-        AudioEngine32Bit engine = new AudioEngine32Bit(gain);
+        Player player = new Player();
 
         // Run Engine in a separate Thread
         Thread audioThread = new Thread(() -> {
             try {
-                engine.startEngine();
+                player.start();
             } catch (Exception e) {
                 e.printStackTrace();
             }
@@ -19,6 +25,5 @@ public class Main {
         audioThread.start();
 
         System.out.println("Marduk Audio Core is running...");
-
     }
 }
