@@ -4,9 +4,8 @@ import processors.GainProcessor;
 
 import javax.sound.sampled.*;
 import java.io.File;
-import java.io.IOException;
 
-public class Mp3AudioEngine implements FormatAudioEngine{
+public class Mp3AudioEngine implements FormatAudioEngine, LineListener{
     private Clip audioClip;
     private FloatControl volumeControl;
     private boolean isPaused = false;
@@ -41,6 +40,8 @@ public class Mp3AudioEngine implements FormatAudioEngine{
         // Esta línea es la que usa la librería que instalaste para convertir MP3 -> PCM
         AudioInputStream decodedStream = AudioSystem.getAudioInputStream(decodedFormat, baseStream);
 
+        audioClip.addLineListener(this);
+
         audioClip = AudioSystem.getClip();
         audioClip.open(decodedStream);
 
@@ -51,6 +52,15 @@ public class Mp3AudioEngine implements FormatAudioEngine{
 
         audioClip.start();
         isPaused = false;
+    }
+
+    @Override
+    public void update(LineEvent event) {
+        if (event.getType() == LineEvent.Type.STOP) {
+            if (audioClip != null && audioClip.getFramePosition() >= audioClip.getFrameLength()) {
+                close();
+            }
+        }
     }
 
     @Override
@@ -87,11 +97,12 @@ public class Mp3AudioEngine implements FormatAudioEngine{
                     audioClip.stop();
                     audioClip.setFramePosition(0);
                     isPaused = false;
-
+                    audioClip.close();
                     // Restauramos el volumen original para la próxima vez
                     setVolume(gainProcessor.getGain());
                 } catch (InterruptedException e) {
                     audioClip.stop();
+                    audioClip.close();
                 }
             }).start();
         }

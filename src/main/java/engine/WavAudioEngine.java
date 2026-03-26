@@ -66,29 +66,6 @@ public class WavAudioEngine implements FormatAudioEngine {
     }
     @Override
     public void stop() {
-//        isPlaying.set(false);
-//        isPaused.set(false);
-//
-//        if (outputLine != null) {
-//            outputLine.drain();
-//            outputLine.close();
-//        }
-//
-//        if (audioInputStream != null) {
-//            try {
-//                audioInputStream.close();
-//            } catch (Exception e) {
-//                e.printStackTrace();
-//            }
-//        }
-//
-//        if (playbackThread != null && playbackThread.isAlive()) {
-//            try {
-//                playbackThread.join(1000);
-//            } catch (InterruptedException e) {
-//                Thread.currentThread().interrupt();
-//            }
-//        }
         if (!isPlaying.get()) return;
 
         // Solo pedimos silencio. El playbackLoop se encargará de procesar
@@ -109,7 +86,7 @@ public class WavAudioEngine implements FormatAudioEngine {
     }
 
     private void internalStop() {
-        if (!isPlaying.get() && !isPaused.get()) return;
+        if (!isPlaying.get() && !isPaused.get() && audioInputStream == null) return;
 
         isPlaying.set(false);
         isPaused.set(false);
@@ -129,6 +106,8 @@ public class WavAudioEngine implements FormatAudioEngine {
             } catch (IOException e) {}
             audioInputStream = null;
         }
+
+        System.gc();
     }
 
     @Override
@@ -188,6 +167,8 @@ public class WavAudioEngine implements FormatAudioEngine {
             stop();
         } catch (Exception e) {
             e.printStackTrace();
+        } finally {
+            internalStop();
         }
     }
     @Override
@@ -198,7 +179,6 @@ public class WavAudioEngine implements FormatAudioEngine {
         if (playbackThread != null && playbackThread.isAlive()) {
             playbackThread.interrupt();
         }
-
 
         // 3. Cerramos el archivo de audio
         if (audioInputStream != null) {
@@ -212,12 +192,15 @@ public class WavAudioEngine implements FormatAudioEngine {
         // 4. Esperamos a que el hilo termine para evitar hilos "zombies"
         if (playbackThread != null && playbackThread.isAlive()) {
             try {
-                playbackThread.interrupt(); // Interrumpimos si está en sleep
-                playbackThread.join(500);   // Esperamos medio segundo a que muera
+                playbackThread.interrupt();
+                playbackThread.join(500);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
             }
         }
+
+        this.file = null;
+        this.gainProcessor = null;
     }
 }
 
