@@ -66,30 +66,71 @@ public class WavAudioEngine implements FormatAudioEngine {
     }
     @Override
     public void stop() {
+//        isPlaying.set(false);
+//        isPaused.set(false);
+//
+//        if (outputLine != null) {
+//            outputLine.drain();
+//            outputLine.close();
+//        }
+//
+//        if (audioInputStream != null) {
+//            try {
+//                audioInputStream.close();
+//            } catch (Exception e) {
+//                e.printStackTrace();
+//            }
+//        }
+//
+//        if (playbackThread != null && playbackThread.isAlive()) {
+//            try {
+//                playbackThread.join(1000);
+//            } catch (InterruptedException e) {
+//                Thread.currentThread().interrupt();
+//            }
+//        }
+        if (!isPlaying.get()) return;
+
+        // Solo pedimos silencio. El playbackLoop se encargará de procesar
+        // las muestras restantes con el nuevo volumen.
+        gainProcessor.setGain(0.0f);
+
+        // Esperamos un momento breve en este mismo hilo para que el buffer se vacíe
+        // (Aproximadamente lo que tarda el fade: 200-300ms)
+        new Thread(() -> {
+            try {
+                Thread.sleep(300);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } finally {
+                internalStop();
+            }
+        }).start();
+    }
+
+    private void internalStop() {
+        if (!isPlaying.get() && !isPaused.get()) return;
+
         isPlaying.set(false);
         isPaused.set(false);
 
         if (outputLine != null) {
-            outputLine.drain();
-            outputLine.close();
+            try {
+                outputLine.drain();
+                outputLine.stop();
+                outputLine.close();
+            } catch (Exception e) {}
+            outputLine = null;
         }
 
         if (audioInputStream != null) {
             try {
                 audioInputStream.close();
-            } catch (Exception e) {
-                e.printStackTrace();
-            }
-        }
-
-        if (playbackThread != null && playbackThread.isAlive()) {
-            try {
-                playbackThread.join(1000);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            } catch (IOException e) {}
+            audioInputStream = null;
         }
     }
+
     @Override
     public void setVolume(float volume) {
         if (gainProcessor != null) {
@@ -151,20 +192,13 @@ public class WavAudioEngine implements FormatAudioEngine {
     }
     @Override
     public void close() {
-        // 1. Forzamos la detención del bucle de reproducción
-        isPlaying.set(false);
-        isPaused.set(false);
+        // Cierre inmediato para try-with-resources
+        internalStop();
 
-        // 2. Cerramos la línea de salida (la "manguera" de audio)
-        if (outputLine != null) {
-            try {
-                outputLine.stop();
-                outputLine.flush(); // Limpia datos residuales
-                outputLine.close();
-            } catch (Exception e) {
-                // Ignorar si ya está cerrada
-            }
+        if (playbackThread != null && playbackThread.isAlive()) {
+            playbackThread.interrupt();
         }
+
 
         // 3. Cerramos el archivo de audio
         if (audioInputStream != null) {

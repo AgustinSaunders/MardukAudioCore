@@ -1,6 +1,8 @@
 package utils;
 
+import engine.AudioEngineFactory;
 import engine.FormatAudioEngine;
+import engine.Mp3AudioEngine;
 import engine.WavAudioEngine;
 import processors.GainProcessor;
 
@@ -14,23 +16,19 @@ public class Player {
 
     private FileLoader fileLoader = new FileLoader();
     private File file = fileLoader.getFile();
-    // Supongamos que GainProcessor recibe el volumen inicial
     private GainProcessor gainProcessor = new GainProcessor(0.5f);
 
     public void start() {
-        // El bloque try-with-resources cerrará automáticamente audioEngine y scanner
-        try (FormatAudioEngine audioEngine = new WavAudioEngine(gainProcessor, file);
+        try (FormatAudioEngine audioEngine = AudioEngineFactory.createEngine(gainProcessor, file);
              Scanner scanner = new Scanner(System.in)) {
 
             String response = "";
             System.out.println("Cargando archivo: " + file.getName());
 
-            while (!response.equals("Q")) {
-                System.out.println("\n--- Controles ---");
-                System.out.println("P = Play / Pause / Resume");
-                System.out.println("S = Stop (Detener completamente)");
-                System.out.println("Q = Quit");
-                System.out.print("Tu elección: ");
+            while (!response.equalsIgnoreCase("Q")) {
+                System.out.println("\n[P] Play/Pause | [S] Stop | [+] Vol Up | [-] Vol Down | [Q] Quit");
+                System.out.printf("Volumen actual: %.0f%%\n", audioEngine.getVolume() * 100);
+                System.out.print(">> ");
 
                 response = scanner.next().toUpperCase();
 
@@ -51,13 +49,18 @@ public class Player {
                         audioEngine.stop();
                         System.out.println("Reproducción detenida.");
                     }
-                    case "Q" -> {
-                        // No es estrictamente necesario llamar a close() aquí
-                        // porque el try-with-resources lo hará al salir del bloque.
-                        System.out.println("Cerrando motor...");
+                    case "+" -> {
+                        float newVol = Math.min(1.0f, audioEngine.getVolume() + 0.1f);
+                        audioEngine.setVolume(newVol);
                     }
-                    default -> System.out.println("Opción inválida.");
+                    case "-" -> {
+                        float newVol = Math.max(0.0f, audioEngine.getVolume() - 0.1f);
+                        audioEngine.setVolume(newVol);
+                    }
+                    case "Q" -> System.out.println("Saliendo...");
+                    default -> System.out.println("Opción no válida.");
                 }
+
             }
         } catch (Exception e) {
             System.err.println("Error en el sistema de audio: " + e.getMessage());
