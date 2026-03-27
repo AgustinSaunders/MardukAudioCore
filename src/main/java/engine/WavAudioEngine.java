@@ -12,17 +12,19 @@ public class WavAudioEngine implements FormatAudioEngine {
     private AudioInputStream audioInputStream;
     private SourceDataLine outputLine;
     private GainProcessor gainProcessor;
-    private File file;
+    private String filePath;
     private AtomicBoolean isPlaying = new AtomicBoolean(false);
     private AtomicBoolean isPaused = new AtomicBoolean(false);
     private Thread playbackThread;
 
     private static final int BUFFER_SIZE = 4096;
 
-    public WavAudioEngine(GainProcessor gainProcessor, File file) {
+    public WavAudioEngine(GainProcessor gainProcessor, String filePath) {
         this.gainProcessor = gainProcessor;
-        this.file = file;
+        this.filePath = filePath;
     }
+
+    private File file = new File(filePath);
 
     @Override
     public void play() throws Exception {
@@ -31,6 +33,7 @@ public class WavAudioEngine implements FormatAudioEngine {
         }
 
         this.audioInputStream = AudioSystem.getAudioInputStream(file);
+
 
         AudioFormat format = audioInputStream.getFormat();
         DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
@@ -128,6 +131,16 @@ public class WavAudioEngine implements FormatAudioEngine {
     public boolean isPaused() {
         return isPaused.get();
     }
+
+    @Override
+    public void seek(double seconds) {
+    }
+
+    @Override
+    public double getDuration() {
+        return 0;
+    }
+
     private void playbackLoop() {
         try {
             AudioFormat format = audioInputStream.getFormat();

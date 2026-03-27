@@ -11,4 +11,6 @@ public interface FormatAudioEngine extends AutoCloseable{
     void close();
     boolean isPlaying();
     boolean isPaused();
+    void seek(double seconds);
+    double getDuration();
 }
