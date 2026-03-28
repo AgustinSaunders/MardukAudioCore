@@ -1,5 +1,7 @@
 package engine;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import processors.GainProcessor;
 import utils.AudioUtils;
 import utils.FFmpegAudioDecoder;
@@ -10,6 +12,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.locks.ReentrantLock;
 
 public class FFmpegAudioEngine implements FormatAudioEngine {
+    private static final Logger logger = LoggerFactory.getLogger(FFmpegAudioEngine.class);
+
     private final ReentrantLock decoderLock = new ReentrantLock();
     private FFmpegAudioDecoder decoder;
     private SourceDataLine outputLine;
@@ -31,15 +35,18 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
     public FFmpegAudioEngine(GainProcessor gainProcessor, String filePath) {
         this.gainProcessor = gainProcessor;
         this.filePath = filePath;
+        logger.debug("FFmpegAudioEngine initialized for file: {}", filePath);
     }
 
     @Override
     public void play() throws Exception {
+
+        logger.info("Start playing: {}", filePath);
         if (isPlaying.get()) {
+            logger.debug("Playback already active, stoping...");
             internalStop();
         }
 
-        // Inicializamos el decodificador nativo
         decoder = new FFmpegAudioDecoder();
         decoder.open(filePath);
 
@@ -52,21 +59,27 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
         DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
 
         this.outputLine = (SourceDataLine) AudioSystem.getLine(info);
-        // Usamos un buffer pequeño para baja latencia (32KB aprox)
+        // Using small buffer for low latency (32KB approx)
         this.outputLine.open(format, 32768);
         this.outputLine.start();
+
+        logger.debug("Audio line open and started");
 
         isPlaying.set(true);
         isPaused.set(false);
 
         playbackThread = new Thread(this::playbackLoop);
         playbackThread.setPriority(Thread.MAX_PRIORITY);
+        playbackThread.setName("AudioPlaybackThread");
         playbackThread.start();
+
+        logger.info("AudioPlaybackThread started");
     }
 
     @Override
     public void pause() {
         if (isPlaying.get() && !isPaused.get()) {
+            logger.info("Pausing playback");
             isPaused.set(true);
             if (outputLine != null) outputLine.stop();
         }
@@ -75,6 +88,7 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
     @Override
     public void resume() {
         if (isPlaying.get() && isPaused.get()) {
+            logger.info("Continue playing");
             isPaused.set(false);
             if (outputLine != null) outputLine.start();
         }
@@ -82,6 +96,7 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
 
     @Override
     public void stop() {
+        logger.info("Stoping playback");
         if (!isPlaying.get()) return;
 
         gainProcessor.setGain(0.0f);
@@ -96,33 +111,45 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
     }
 
     private void internalStop() {
+        logger.debug("Executing internalStop");
         if (!isPlaying.get() && !isPaused.get() && decoder == null) return;
+
+        SourceDataLine line = this.outputLine;
+
+        this.outputLine = null;
 
         isPlaying.set(false);
         isPaused.set(false);
 
-        if (outputLine != null) {
+        if (line != null) {
             try {
-                outputLine.drain();
-                outputLine.stop();
-                outputLine.close();
-            } catch (Exception e) {}
-            outputLine = null;
+                line.drain();
+                line.stop();
+                line.close();
+                logger.debug("Outputline closed successfully");
+            } catch (Exception e) {
+                logger.error("Error closing outputLine: {}", e.getMessage());
+            }
         }
 
         if (decoder != null) {
             try {
                 decoder.close();
-            } catch (Exception e) {}
+                logger.debug("Decoder closed");
+            } catch (Exception e) {
+                logger.error("Error closing decoder: {}", e.getMessage());
+                e.printStackTrace();
+            }
             decoder = null;
         }
-
-        System.gc();
     }
 
     private void playbackLoop() {
+        logger.debug("Playback loop initialized");
         try {
             int samplesRead;
+            int totalSamplesPlayed = 0;
+
             while (isPlaying.get()) {
                 while (isPaused.get() && isPlaying.get()) {
                     Thread.sleep(10);
@@ -138,21 +165,26 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
                     decoderLock.unlock();
                 }
 
-                if (samplesRead == -1) break;
-                if (samplesRead == 0) continue; // ← AGREGAR ESTO: Skip si no hay datos
+                if (samplesRead == -1) {
+                    logger.debug("End of file reached");
+                    break;}
+                if (samplesRead == 0) continue;
 
-                // 1. Procesar (FUERA del lock)
                 gainProcessor.process(floatBuffer, samplesRead);
 
-                // 2. Convertir a 16 bits
+                // Convert to 16 bits PCM (signed) for output
                 AudioUtils.floatsToBytes(floatBuffer, byteBuffer, samplesRead, BIT_DEPTH_OUTPUT, false);
 
-                // ¡AQUÍ ESTÁ LA FIX! samplesRead YA está en MUESTRAS de audio (estéreo)
-                // En 16-bit estéreo: 1 muestra = 2 canales * 2 bytes = 4 bytes
                 int bytesToWrite = samplesRead * BYTES_PER_SAMPLE;
                 outputLine.write(byteBuffer, 0, bytesToWrite);
+
+                totalSamplesPlayed += samplesRead;
             }
+
+            logger.info("Playback ended. Total samples: {}", totalSamplesPlayed);
+            stop();
         } catch (Exception e) {
+            logger.error("Error on playback loop: {}", e.getMessage());
             e.printStackTrace();
         } finally {
             internalStop();
@@ -162,7 +194,10 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
 
     @Override
     public void setVolume(float volume) {
-        if (gainProcessor != null) gainProcessor.setGain(volume);
+        if (gainProcessor != null) {
+            gainProcessor.setGain(volume);
+            logger.debug("Volume set at: {}%", volume * 100);
+        }
     }
 
     @Override
@@ -178,7 +213,11 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
 
     @Override
     public void seek(double seconds) {
-        if (decoder == null || outputLine == null) return;
+        logger.info("Seek called to: {} seconds", seconds);
+        if (decoder == null || outputLine == null) {
+            logger.warn("Seek could not be done: decoder or outputLine is null");
+            return;
+        }
 
         try {
             isPaused.set(true);
@@ -198,7 +237,10 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
             isPaused.set(false);
             outputLine.start();
 
+            logger.info("Seek completed succesfuly");
+
         } catch (Exception e) {
+            logger.error("Error during seek: {}", e.getMessage());
             e.printStackTrace();
             isPaused.set(false);
         }
@@ -211,10 +253,17 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
 
     @Override
     public void close() {
+        logger.debug("Closing FFmpegAudioEngine");
         internalStop();
         if (playbackThread != null && playbackThread.isAlive()) {
             playbackThread.interrupt();
-            try { playbackThread.join(500); } catch (InterruptedException e) { Thread.currentThread().interrupt(); }
+            try {
+                playbackThread.join(500);
+            }
+            catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
+        logger.info("FFmpegAudioEngine closed successfully");
     }
 }

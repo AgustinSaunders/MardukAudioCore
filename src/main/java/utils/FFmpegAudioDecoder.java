@@ -6,6 +6,8 @@ import org.bytedeco.ffmpeg.avutil.*;
 import org.bytedeco.ffmpeg.swresample.*;
 import org.bytedeco.javacpp.FloatPointer;
 import org.bytedeco.javacpp.PointerPointer;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import static org.bytedeco.ffmpeg.avformat.AVFormatContext.AVFMT_FLAG_CUSTOM_IO;
 import static org.bytedeco.ffmpeg.avformat.AVFormatContext.AVFMT_FLAG_GENPTS;
@@ -15,6 +17,9 @@ import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.bytedeco.ffmpeg.global.swresample.*;
 
 public class FFmpegAudioDecoder implements AutoCloseable {
+
+    private static final Logger logger = LoggerFactory.getLogger(FFmpegAudioDecoder.class);
+
     private AVFormatContext formatContext;
     private AVCodecContext codecContext;
     private SwrContext swrContext;
@@ -26,38 +31,43 @@ public class FFmpegAudioDecoder implements AutoCloseable {
     private volatile boolean isClosed = false;
 
     public void open(String filePath) throws Exception {
-        // 1. Abrir contenedor
+
+        logger.info("Opening audio file: {}", filePath);
+
         formatContext = avformat_alloc_context();
 
         formatContext.flags(formatContext.flags() | AVFMT_FLAG_GENPTS | AVFMT_FLAG_CUSTOM_IO);
         formatContext.seek2any(1);
 
         if (avformat_open_input(formatContext, filePath, null, null) < 0)
-            throw new Exception("No se pudo abrir el archivo.");
+            throw new Exception("Failed to open file.");
 
-        // IMPORTANTE: SIEMPRE llamar a avformat_find_stream_info()
-        // Incluso para WAV, es necesario para calcular la duración correctamente
+        logger.debug("Looking for stream info...");
         if (avformat_find_stream_info(formatContext, (AVDictionary) null) < 0)
-            throw new Exception("Sin info de stream.");
+            throw new Exception("No stream info.");
 
-        // 2. Buscar stream de audio
         for (int i = 0; i < formatContext.nb_streams(); i++) {
             if (formatContext.streams(i).codecpar().codec_type() == AVMEDIA_TYPE_AUDIO) {
                 audioStreamIndex = i;
                 break;
             }
         }
-        if (audioStreamIndex == -1) throw new Exception("No se encontró stream de audio.");
+        if (audioStreamIndex == -1) throw new Exception("Audio stream not found.");
 
-        // 3. Configurar Codec
+        logger.debug("Audio stream found at index: {}", audioStreamIndex);
+
         AVCodec codec = avcodec_find_decoder(formatContext.streams(audioStreamIndex).codecpar().codec_id());
+        String codecName = codec.name().getString();
+        logger.info("Codec detected: {} ({})", codecName,
+                formatContext.streams(audioStreamIndex).codecpar().codec_id());
+
         codecContext = avcodec_alloc_context3(codec);
         avcodec_parameters_to_context(codecContext, formatContext.streams(audioStreamIndex).codecpar());
 
         if (avcodec_open2(codecContext, codec, (AVDictionary) null) < 0)
-            throw new Exception("No se pudo abrir el codec.");
+            throw new Exception("Codec could not be opened.");
 
-        // 4. Configurar Resampler
+        logger.debug("Initializing resampler...");
         AVChannelLayout outChannelLayout = new AVChannelLayout();
         av_channel_layout_default(outChannelLayout, 2);
 
@@ -74,11 +84,17 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         );
 
         if (swr_init(swrContext) < 0)
-            throw new Exception("No se pudo inicializar el resampler.");
+            throw new Exception("Resampler failed to initialize.");
+
+        double duration = getDuration();
+        logger.info("File loaded succesfuly. Duration: {} seconds", duration);
     }
 
     public int readNextSamples(float[] outputBuffer) throws Exception {
-        if (isClosed || codecContext == null) return -1;
+        if (isClosed || codecContext == null) {
+            logger.warn("Try to readNextSample on a closed or invalid decoder");
+            return -1;
+        }
 
         int ret;
         boolean flushing = false;
@@ -90,6 +106,7 @@ public class FFmpegAudioDecoder implements AutoCloseable {
                 ret = avcodec_receive_frame(codecContext, frame);
             } catch (Exception e) {
                 if (isClosed || codecContext == null) return -1;
+                logger.error("Error receiving frame from codec: {}", e.getMessage());
                 throw e;
             }
 
@@ -110,6 +127,7 @@ public class FFmpegAudioDecoder implements AutoCloseable {
                 av_frame_unref(frame);
 
                 if (converted > 0) {
+                    logger.trace("Converted {} samples to output buffer", converted);
                     fp.get(outputBuffer, 0, converted * 2);
                     return converted * 2;
                 }
@@ -117,7 +135,7 @@ public class FFmpegAudioDecoder implements AutoCloseable {
             }
 
             if (flushing && ret == AVERROR_EOF) {
-                // flush del resampler
+                logger.info("End of stream reached (EOF)");
                 int outCount = outputBuffer.length / 2;
                 FloatPointer fp = new FloatPointer(outputBuffer);
                 PointerPointer outPointers = new PointerPointer(1).put(fp);
@@ -131,12 +149,14 @@ public class FFmpegAudioDecoder implements AutoCloseable {
                 );
 
                 if (converted > 0) {
+                    logger.debug("Flushed remaining {} samples from resampler", converted);
                     fp.get(outputBuffer, 0, converted * 2);
                     return converted * 2;
                 }
                 return -1;
             }
             if (!flushing && av_read_frame(formatContext, packet) < 0) {
+                logger.debug("No more packets in file, entering flushing mode");
                 avcodec_send_packet(codecContext, null);
                 flushing = true;
                 continue;
@@ -144,7 +164,10 @@ public class FFmpegAudioDecoder implements AutoCloseable {
 
             if (!flushing) {
                 if (packet.stream_index() == audioStreamIndex) {
-                    avcodec_send_packet(codecContext, packet);
+                    int sendRet = avcodec_send_packet(codecContext, packet);
+                    if (sendRet < 0 && sendRet != AVERROR_EAGAIN()) {
+                        logger.error("Error sending packet to decoder: {}", sendRet);
+                    }
                 }
                 av_packet_unref(packet);
             }
@@ -152,70 +175,75 @@ public class FFmpegAudioDecoder implements AutoCloseable {
     }
 
     public void seek(double seconds) throws Exception {
-        if (isClosed || formatContext == null || codecContext == null) return;
+        if (isClosed || formatContext == null || codecContext == null) {
+            logger.warn("Try to seek on a closed closed or invalid decoder");
+            return;
+        }
+
+        logger.debug("Seek solicitado a: {} segundos", seconds);
 
         try {
-            // Convertir segundos a timestamp en unidades de time_base
+
             double timeBase = av_q2d(formatContext.streams(audioStreamIndex).time_base());
             long ts = Math.round(seconds / timeBase);
 
-            // Clamp ts a valores válidos
             if (ts < 0) ts = 0;
+            logger.debug("Timestamp calculated: {} (timebase: {})", ts, timeBase);
 
-            System.out.println("Buscando en timestamp: " + ts + " (segundos: " + seconds + ", timebase: " + timeBase + ")");
-
-            // Intentar seek en el stream de audio específico
             int ret = av_seek_frame(formatContext, audioStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
 
             if (ret < 0) {
-                System.err.println("Seek falló, intentando con AVSEEK_FLAG_ANY");
-                // Si falla, intentar con AVSEEK_FLAG_ANY para buscar en cualquier frame
+                logger.warn("Seek failed with AVSEEK_FLAG_BACKWARD, trying with AVSEEK_FLAG_ANY");
                 ret = av_seek_frame(formatContext, audioStreamIndex, ts, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
 
                 if (ret < 0) {
-                    System.err.println("Seek falló nuevamente, intentando seek global");
-                    // Último intento: buscar globalmente con microsegundos
+                    logger.warn("Seek failed again, trying global seek");
                     long targetMicroseconds = (long) (seconds * AV_TIME_BASE);
                     av_seek_frame(formatContext, -1, targetMicroseconds, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
                 }
             }
 
-            System.out.println("Seek completado, flushing buffers...");
+            logger.debug("Seek completed, flushing buffers");
 
         } catch (Exception e) {
             if (isClosed) return;
-            System.err.println("Error durante seek: " + e.getMessage());
+            logger.error("Error during seek: {}", e.getMessage());
             e.printStackTrace();
         }
 
-        // CRÍTICO: Flush del codec para descartar frames en caché
         if (codecContext != null && !isClosed) {
             try {
                 avcodec_flush_buffers(codecContext);
-                System.out.println("Codec flushed");
+                logger.debug("Codec flushed");
             } catch (Exception e) {
-                System.err.println("Error flushing codec: " + e.getMessage());
+                logger.error("Error flushing codec: {} ", e.getMessage());
+                e.printStackTrace();
             }
         }
 
-        // Reinicializar resampler después del seek
+
         if (swrContext != null && !isClosed) {
             try {
                 swr_init(swrContext);
-                System.out.println("Resampler reinitialized");
+                logger.debug("Resampler reinitialized");
             } catch (Exception e) {
-                System.err.println("Error reinitializing resampler: " + e.getMessage());
+                logger.warn("Error while reinitializing resampler: {}", e.getMessage());
+                e.printStackTrace();
             }
         }
     }
 
     public double getDuration() {
-        return formatContext.duration() / (double) AV_TIME_BASE;
+        if (formatContext == null) return 0.0;
+        double duration = formatContext.duration() / (double) AV_TIME_BASE;
+        logger.debug("Duration obtained: {} seconds", duration);
+        return duration;
     }
 
 
     @Override
     public void close() {
+        logger.debug("Closing FFmpegAudioDecoder");
         isClosed = true;
 
         codecContext = null;
@@ -223,5 +251,7 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         formatContext = null;
         packet = null;
         frame = null;
+
+        logger.info("FFmpegAudioDecoder closed successfully");
     }
 }

@@ -1,18 +1,26 @@
 package processors;
 
-public class GainProcessor implements AudioProcessor {
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
-    private volatile float targetGain; // Lo que el usuario pide
-    private float currentGain;         // Lo que se aplica en el momento (suave)
-    private static final float FADE_SPEED = 0.000075f; // Ajusta para velocidad de rampa
+public class GainProcessor implements AudioProcessor {
+    private static final Logger logger = LoggerFactory.getLogger(GainProcessor.class);
+
+    private volatile float targetGain;
+    private float currentGain;
+    private static final float FADE_SPEED = 0.000075f;
 
     public GainProcessor(float initialGain) {
         this.targetGain = initialGain;
-        this.currentGain = initialGain; // Al inicio coinciden
+        this.currentGain = initialGain;
+        logger.debug("GainProcessor initialized with gain: {}%", initialGain * 100);
     }
 
     public void setGain(float gain) {
         this.targetGain = Math.max(0.0f, Math.min(1.0f, gain));
+        if (Math.abs(this.targetGain - this.currentGain) > 0.01f) {
+            logger.debug("Gain target establish at: {}%", this.targetGain * 100);
+        }
     }
 
     public float getGain() {
@@ -21,14 +29,12 @@ public class GainProcessor implements AudioProcessor {
 
     public void process(float[] samples, int sampleCount) {
         for (int i = 0; i < sampleCount; i++) {
-            // 1. Acercar el volumen actual al objetivo poco a poco
             if (currentGain < targetGain) {
                 currentGain = Math.min(targetGain, currentGain + FADE_SPEED);
             } else if (currentGain > targetGain) {
                 currentGain = Math.max(targetGain, currentGain - FADE_SPEED);
             }
 
-            // 2. Aplicar el volumen suavizado a la muestra
             samples[i] *= currentGain;
         }
     }
