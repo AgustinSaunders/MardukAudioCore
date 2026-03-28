@@ -7,8 +7,10 @@ import utils.FFmpegAudioDecoder;
 import javax.sound.sampled.*;
 import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.locks.ReentrantLock;
 
 public class FFmpegAudioEngine implements FormatAudioEngine {
+    private final ReentrantLock decoderLock = new ReentrantLock();
     private FFmpegAudioDecoder decoder;
     private SourceDataLine outputLine;
     private GainProcessor gainProcessor;
@@ -18,12 +20,13 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
     private Thread playbackThread;
 
     // Buffer de floats para el procesamiento (32-bit Float Estéreo)
-    private static final int SAMPLES_PER_READ = 1024;
-    private static int BIT_DEPTH_OUTPUT = 16;
-    private static int BYTES = 2;
-    private static final int BUFFER_SIZE_FLOAT = SAMPLES_PER_READ * 2; // *2 por estéreo
+    private static final int SAMPLES_PER_READ = 1024;           // 1024 muestras de audio
+    private static final int CHANNELS = 2;                       // Estéreo
+    private static final int BIT_DEPTH_OUTPUT = 16;
+    private static final int BYTES_PER_SAMPLE = 2;              // 16 bits = 2 bytes
+    private static final int BUFFER_SIZE_FLOAT = SAMPLES_PER_READ * CHANNELS; // 2048 floats
     float[] floatBuffer = new float[BUFFER_SIZE_FLOAT];
-    byte[] byteBuffer = new byte[BUFFER_SIZE_FLOAT * BYTES];
+    byte[] byteBuffer = new byte[BUFFER_SIZE_FLOAT * BYTES_PER_SAMPLE]; // 4096 bytes MAX
 
     public FFmpegAudioEngine(GainProcessor gainProcessor, String filePath) {
         this.gainProcessor = gainProcessor;
@@ -82,17 +85,14 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
         if (!isPlaying.get()) return;
 
         gainProcessor.setGain(0.0f);
+        isPlaying.set(false);
 
-        new Thread(() -> {
-            try {
-                // Esperamos un poco más (400ms) porque FFmpeg y la línea tienen más latencia
-                Thread.sleep(400);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            } finally {
-                internalStop();
-            }
-        }).start();
+        try {
+            Thread.sleep(50);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        internalStop();
     }
 
     private void internalStop() {
@@ -111,7 +111,9 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
         }
 
         if (decoder != null) {
-            decoder.close();
+            try {
+                decoder.close();
+            } catch (Exception e) {}
             decoder = null;
         }
 
@@ -120,38 +122,43 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
 
     private void playbackLoop() {
         try {
-
             int samplesRead;
-            // decoder.readNextSamples debe devolver la cantidad de floats leídos
             while (isPlaying.get()) {
-
                 while (isPaused.get() && isPlaying.get()) {
                     Thread.sleep(10);
                 }
 
                 if (!isPlaying.get()) break;
 
-                samplesRead = decoder.readNextSamples(floatBuffer);
-                if (samplesRead == -1) break;
+                decoderLock.lock();
+                try {
+                    if (!isPlaying.get()) break;
+                    samplesRead = decoder.readNextSamples(floatBuffer);
+                } finally {
+                    decoderLock.unlock();
+                }
 
-                // 1. Procesar
+                if (samplesRead == -1) break;
+                if (samplesRead == 0) continue; // ← AGREGAR ESTO: Skip si no hay datos
+
+                // 1. Procesar (FUERA del lock)
                 gainProcessor.process(floatBuffer, samplesRead);
 
-                // 2. Convertir a 16 bits (porque tu línea es de 16 bits ahora)
-                // Little Endian = false es lo más común en Linux
+                // 2. Convertir a 16 bits
                 AudioUtils.floatsToBytes(floatBuffer, byteBuffer, samplesRead, BIT_DEPTH_OUTPUT, false);
 
-                // 3. Escribir exactamente la cantidad de bytes generados
-                outputLine.write(byteBuffer, 0, samplesRead * BYTES);
-
+                // ¡AQUÍ ESTÁ LA FIX! samplesRead YA está en MUESTRAS de audio (estéreo)
+                // En 16-bit estéreo: 1 muestra = 2 canales * 2 bytes = 4 bytes
+                int bytesToWrite = samplesRead * BYTES_PER_SAMPLE;
+                outputLine.write(byteBuffer, 0, bytesToWrite);
             }
-            stop();
         } catch (Exception e) {
             e.printStackTrace();
         } finally {
             internalStop();
         }
     }
+
 
     @Override
     public void setVolume(float volume) {
@@ -179,7 +186,12 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
             outputLine.stop();
             outputLine.flush();
 
-            decoder.seek(seconds);
+            decoderLock.lock();
+            try {
+                decoder.seek(seconds);
+            } finally {
+                decoderLock.unlock();
+            }
 
             Arrays.fill(floatBuffer, 0);
 

@@ -11,9 +11,9 @@ public class FileLoader {
 //    String filePath = "/home/sondsky/Music/WavFiles/Memories From War gpx.wav";
 
 //    Mp3
-    String filePath = "/home/sondsky/Music/Mp3Files/04. STYX HELIX.mp3";
-//    String filePath = "/home/sondsky/Music/Mp3Files/03 - Godzilla.mp3";
-//    String filePath = "/home/sondsky/Music/Mp3Files/05 No Te Olvide.mp3";
+//    String filePath = "/home/sondsky/Music/Mp3Files/04. STYX HELIX.mp3";
+    String filePath = "/home/sondsky/Music/Mp3Files/03 - Godzilla.mp3";
+//    String filePath = "/home/sondsky/Music/Mp3Files/05 No Te Olvide.mpp3";
 
 
     public String getFilePath(){
