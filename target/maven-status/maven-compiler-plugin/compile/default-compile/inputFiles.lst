@@ -1,0 +1,9 @@
+/home/sondsky/code/MardukAudioCore/src/main/java/Main.java
+/home/sondsky/code/MardukAudioCore/src/main/java/engine/FFmpegAudioEngine.java
+/home/sondsky/code/MardukAudioCore/src/main/java/engine/FormatAudioEngine.java
+/home/sondsky/code/MardukAudioCore/src/main/java/processors/AudioProcessor.java
+/home/sondsky/code/MardukAudioCore/src/main/java/processors/GainProcessor.java
+/home/sondsky/code/MardukAudioCore/src/main/java/utils/AudioUtils.java
+/home/sondsky/code/MardukAudioCore/src/main/java/utils/FFmpegAudioDecoder.java
+/home/sondsky/code/MardukAudioCore/src/main/java/utils/FileLoader.java
+/home/sondsky/code/MardukAudioCore/src/main/java/utils/Player.java

@@ -1,9 +1,6 @@
 package utils;
 
-import engine.AudioEngineFactory;
-import engine.FormatAudioEngine;
-import engine.Mp3AudioEngine;
-import engine.WavAudioEngine;
+import engine.*;
 import processors.GainProcessor;
 
 import javax.sound.sampled.LineUnavailableException;
@@ -15,18 +12,18 @@ import java.util.Scanner;
 public class Player {
 
     private FileLoader fileLoader = new FileLoader();
-    private File file = fileLoader.getFile();
+    private String filePath = fileLoader.getFilePath();
     private GainProcessor gainProcessor = new GainProcessor(0.5f);
 
     public void start() {
-        try (FormatAudioEngine audioEngine = AudioEngineFactory.createEngine(gainProcessor, file);
+        try (FormatAudioEngine audioEngine = new FFmpegAudioEngine(gainProcessor, filePath);
              Scanner scanner = new Scanner(System.in)) {
 
             String response = "";
-            System.out.println("Cargando archivo: " + file.getName());
+//            System.out.println("Cargando archivo: " + file.getName());
 
             while (!response.equalsIgnoreCase("Q")) {
-                System.out.println("\n[P] Play/Pause | [S] Stop | [+] Vol Up | [-] Vol Down | [Q] Quit");
+                System.out.println("\n[P] Play/Pause | [S] Stop | [+] Vol Up | [-] Vol Down | [L] Jump/Leap | [Q] Quit");
                 System.out.printf("Volumen actual: %.0f%%\n", audioEngine.getVolume() * 100);
                 System.out.print(">> ");
 
@@ -56,6 +53,27 @@ public class Player {
                     case "-" -> {
                         float newVol = Math.max(0.0f, audioEngine.getVolume() - 0.1f);
                         audioEngine.setVolume(newVol);
+                    }
+                    case "L" -> {
+                        double totalDuration = audioEngine.getDuration();
+                        int minutes = (int) totalDuration / 60;
+                        int seconds = (int) totalDuration % 60;
+
+                        System.out.printf("Duración total del archivo: %02d:%02d (%.2f segundos)\n",
+                                minutes, seconds, totalDuration);
+                        System.out.print("¿A qué segundo quieres saltar?: ");
+
+                        if (scanner.hasNextDouble()) {
+                            double target = scanner.nextDouble();
+                            if (target >= 0 && target <= totalDuration) {
+                                audioEngine.seek(target);
+                            } else {
+                                System.out.println("Error: El tiempo debe estar entre 0 y " + totalDuration);
+                            }
+                        } else {
+                            System.out.println("Entrada inválida.");
+                            scanner.next();
+                        }
                     }
                     case "Q" -> System.out.println("Saliendo...");
                     default -> System.out.println("Opción no válida.");
