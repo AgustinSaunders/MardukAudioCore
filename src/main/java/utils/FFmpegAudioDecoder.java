@@ -16,6 +16,32 @@ import static org.bytedeco.ffmpeg.global.avformat.*;
 import static org.bytedeco.ffmpeg.global.avutil.*;
 import static org.bytedeco.ffmpeg.global.swresample.*;
 
+
+/**
+ * Audio Decoder based on FFmpeg.
+ *
+ * This class provides functionality for opening, decoding, and seeking within audio files using the FFmpeg
+ * library via JavaCPP. It supports multiple audio formats, including MP3, WAV, FLAC, and others.
+ *
+ * <p>This class automatically manages FFmpeg contexts (format, codec, resampler)
+ * and provides methods to read decoded audio samples in floating-point PCM format.
+ *
+ * <p><strong>Typical usage:</strong>
+ * <pre>{@code
+ * try (FFmpegAudioDecoder decoder = new FFmpegAudioDecoder()) {
+ *     decoder.open("file.mp3");
+ *     float[] samples = new float[4096];
+ *     while (decoder.readNextSamples(samples) > 0) {
+ *         // Process samples
+ *     }
+ * }
+ * }</pre>
+ *
+ * @author Agustin Saunders
+ * @version 1.0
+ * @since 1.0
+ * @see engine.FFmpegAudioEngine
+ */
 public class FFmpegAudioDecoder implements AutoCloseable {
 
     private static final Logger logger = LoggerFactory.getLogger(FFmpegAudioDecoder.class);
@@ -30,12 +56,42 @@ public class FFmpegAudioDecoder implements AutoCloseable {
 
     private volatile boolean isClosed = false;
 
+    /**
+     * Open an audio file and prepare the decoder.
+     *
+     * <p>This method performs the following steps:
+     * <ul>
+     *   <li>Opens the input container (format)</li>
+     *   <li>Searches for the audio stream</li>
+     *   <li>Configures the codec context</li>
+     *   <li>Sets up the resampler to convert to stereo floating-point PCM</li>
+     * </ul>
+     *
+     * @param filePath path of the audio file to open
+     * @throws Exception if the file couldn't be opened, doesn't contain audio, or the codecs aren't available
+     * @see #close()
+     */
     public void open(String filePath) throws Exception {
 
         logger.info("Opening audio file: {}", filePath);
 
-        formatContext = avformat_alloc_context();
+        openInputContainer(filePath);
+        findAudioStream();
+        setupCodecContext();
+        setupResampler();
 
+        double duration = getDuration();
+        logger.info("File loaded succesfuly. Duration: {} seconds", duration);
+    }
+
+    /**
+     * Open the input container and extract the stream info.
+     *
+     * @param filePath path of the audio file to open
+     * @throws Exception sif the file couldn't be opened or the stream info couldn't be extracted
+     */
+    private void openInputContainer(String filePath) throws Exception {
+        formatContext = avformat_alloc_context();
         formatContext.flags(formatContext.flags() | AVFMT_FLAG_GENPTS | AVFMT_FLAG_CUSTOM_IO);
         formatContext.seek2any(1);
 
@@ -45,7 +101,14 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         logger.debug("Looking for stream info...");
         if (avformat_find_stream_info(formatContext, (AVDictionary) null) < 0)
             throw new Exception("No stream info.");
+    }
 
+    /**
+     * Search the first  audio stream on the container.
+     *
+     * @throws Exception if couldn't find any audio stream
+     */
+    private void findAudioStream() throws Exception{
         for (int i = 0; i < formatContext.nb_streams(); i++) {
             if (formatContext.streams(i).codecpar().codec_type() == AVMEDIA_TYPE_AUDIO) {
                 audioStreamIndex = i;
@@ -53,9 +116,15 @@ public class FFmpegAudioDecoder implements AutoCloseable {
             }
         }
         if (audioStreamIndex == -1) throw new Exception("Audio stream not found.");
-
         logger.debug("Audio stream found at index: {}", audioStreamIndex);
+    }
 
+    /**
+     * Config codec context for the audio stream found.
+     *
+     * @throws Exception if couldn't find or open the codec
+     */
+    private void setupCodecContext() throws Exception{
         AVCodec codec = avcodec_find_decoder(formatContext.streams(audioStreamIndex).codecpar().codec_id());
         String codecName = codec.name().getString();
         logger.info("Codec detected: {} ({})", codecName,
@@ -66,7 +135,14 @@ public class FFmpegAudioDecoder implements AutoCloseable {
 
         if (avcodec_open2(codecContext, codec, (AVDictionary) null) < 0)
             throw new Exception("Codec could not be opened.");
+    }
 
+    /**
+     * Config the resampler to convert audio to PCM flout stereo at 44100 Hz.
+     *
+     * @throws Exception if couldn't initialize the resampler
+     */
+    private void setupResampler() throws Exception {
         logger.debug("Initializing resampler...");
         AVChannelLayout outChannelLayout = new AVChannelLayout();
         av_channel_layout_default(outChannelLayout, 2);
@@ -85,11 +161,22 @@ public class FFmpegAudioDecoder implements AutoCloseable {
 
         if (swr_init(swrContext) < 0)
             throw new Exception("Resampler failed to initialize.");
-
-        double duration = getDuration();
-        logger.info("File loaded succesfuly. Duration: {} seconds", duration);
     }
 
+    /**
+     * Reads the next audio samples from the file.
+     *
+     * <p>This method decodes the next audio frame and resamples it to stereo (2-channel)
+     * floating-point PCM format. Samples are provided in interleaved format (LRLRLR...).
+     *
+     * <p>Returns -1 when the end of the file is reached.
+     *
+     * @param outputBuffer float array where decoded samples will be stored.
+     *                     It must have a capacity of at least 2048 elements.
+     * @return number of samples (in pairs) written to the buffer, or -1 if EOF is reached
+     * @throws Exception if an error occurs during decoding or resampling
+     * @see #seek(double)
+     */
     public int readNextSamples(float[] outputBuffer) throws Exception {
         if (isClosed || codecContext == null) {
             logger.warn("Try to readNextSample on a closed or invalid decoder");
@@ -135,7 +222,7 @@ public class FFmpegAudioDecoder implements AutoCloseable {
             }
 
             if (flushing && ret == AVERROR_EOF) {
-                logger.info("End of stream reached (EOF)");
+                logger.debug("End of stream reached (EOF)");
                 int outCount = outputBuffer.length / 2;
                 FloatPointer fp = new FloatPointer(outputBuffer);
                 PointerPointer outPointers = new PointerPointer(1).put(fp);
@@ -174,6 +261,22 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         }
     }
 
+    /**
+     * Seeks to a specific position in the audio file.
+     *
+     * <p>This method attempts to find the specified position using multiple strategies:
+     * <ol>
+     *   <li>Direct search using AVSEEK_FLAG_BACKWARD</li>
+     *   <li>Search with AVSEEK_FLAG_ANY if the first strategy fails</li>
+     *   <li>Global search in microseconds as a final fallback</li>
+     * </ol>
+     *
+     * <p>After seeking, the codec buffers are flushed and the resampler is reinitialized.
+     *
+     * @param seconds position in seconds to seek to
+     * @throws Exception if the seek operation fails completely
+     * @see #readNextSamples(float[])
+     */
     public void seek(double seconds) throws Exception {
         if (isClosed || formatContext == null || codecContext == null) {
             logger.warn("Try to seek on a closed closed or invalid decoder");
@@ -221,7 +324,6 @@ public class FFmpegAudioDecoder implements AutoCloseable {
             }
         }
 
-
         if (swrContext != null && !isClosed) {
             try {
                 swr_init(swrContext);
@@ -233,6 +335,11 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         }
     }
 
+    /**
+     * Obtain the total length of the audio file in seconds.
+     *
+     * @return Length in seconds, or 0.0 if context format is not available
+     */
     public double getDuration() {
         if (formatContext == null) return 0.0;
         double duration = formatContext.duration() / (double) AV_TIME_BASE;
@@ -240,7 +347,13 @@ public class FFmpegAudioDecoder implements AutoCloseable {
         return duration;
     }
 
-
+    /**
+     * Close the decoder and releases all FFmpeg resources.
+     *
+     * <p>After calling this method the other methods from this class can't be used.
+     *
+     * @see AutoCloseable#close()
+     */
     @Override
     public void close() {
         logger.debug("Closing FFmpegAudioDecoder");
