@@ -2,6 +2,7 @@ package processors;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import exceptions.AudioProcessingException;
 
 /**
  * Audio gain processor that applies volume control with smooth fade transitions.
@@ -155,14 +156,37 @@ public class GainProcessor implements AudioProcessor {
      *                      <li>0.5f: 50% volume</li>
      *                      <li>1.0f: Maximum volume</li>
      *                    </ul>
+     * 
+     * @throws AudioProcessingException if initial gain is NaN (Not a Number)
      *
      * @see #setGain(float)
      * @see #getGain()
      */
-    public GainProcessor(float initialGain) {
-        this.targetGain = initialGain;
-        this.currentGain = initialGain;
-        logger.debug("GainProcessor initialized with gain: {}%", initialGain * 100);
+    public GainProcessor(float initialGain) throws AudioProcessingException {
+        try {
+            // Validate that initialGain is a valid number
+            if (Float.isNaN(initialGain)) {
+                logger.error("Invalid initial gain: NaN (Not a Number)");
+                throw new AudioProcessingException("Initial gain cannot be NaN (Not a Number)");
+            }
+            
+            if (Float.isInfinite(initialGain)) {
+                logger.error("Invalid initial gain: Infinity");
+                throw new AudioProcessingException("Initial gain cannot be infinite");
+            }
+            
+            // Clamp to valid range [0.0, 1.0]
+            this.targetGain = Math.max(0.0f, Math.min(1.0f, initialGain));
+            this.currentGain = this.targetGain;
+            
+            logger.debug("GainProcessor initialized with gain: {}%", this.targetGain * 100);
+            
+        } catch (AudioProcessingException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Unexpected error initializing GainProcessor: {}", e.getMessage());
+            throw new AudioProcessingException("Failed to initialize GainProcessor", e);
+        }
     }
 
     /**
@@ -193,15 +217,39 @@ public class GainProcessor implements AudioProcessor {
      *               <li>Values &gt; 1.0 are clamped to 1.0</li>
      *               <li>Values in [0.0, 1.0] are used as-is</li>
      *             </ul>
+     * 
+     * @throws AudioProcessingException if gain value is NaN or Infinite
      *
      * @see #getGain()
      * @see #process(float[], int)
      * @see #isFinished()
      */
-    public void setGain(float gain) {
-        this.targetGain = Math.max(0.0f, Math.min(1.0f, gain));
-        if (Math.abs(this.targetGain - this.currentGain) > 0.01f) {
-            logger.debug("Gain target establish at: {}%", this.targetGain * 100);
+    public void setGain(float gain) throws AudioProcessingException {
+        try {
+            // Validate that gain is a valid number
+            if (Float.isNaN(gain)) {
+                logger.error("Invalid gain value: NaN (Not a Number)");
+                throw new AudioProcessingException("Gain value cannot be NaN (Not a Number)");
+            }
+            
+            if (Float.isInfinite(gain)) {
+                logger.error("Invalid gain value: Infinity");
+                throw new AudioProcessingException("Gain value cannot be infinite");
+            }
+            
+            // Clamp to valid range [0.0, 1.0]
+            this.targetGain = Math.max(0.0f, Math.min(1.0f, gain));
+            
+            // Only log significant changes (> 1%)
+            if (Math.abs(this.targetGain - this.currentGain) > 0.01f) {
+                logger.debug("Gain target set to: {}%", this.targetGain * 100);
+            }
+            
+        } catch (AudioProcessingException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Unexpected error setting gain: {}", e.getMessage());
+            throw new AudioProcessingException("Failed to set gain value", e);
         }
     }
 
@@ -274,21 +322,73 @@ public class GainProcessor implements AudioProcessor {
      *                     Samples are modified in-place.
      * @param sampleCount  the number of samples to process from the array. Must be &lt;= samples.length
      *
+     * @throws AudioProcessingException if samples array is null, sampleCount is invalid,
+     *                                  or array size doesn't match sampleCount
      * @throws ArrayIndexOutOfBoundsException if sampleCount is greater than samples.length
-     * @throws NullPointerException if samples array is null
      *
      * @see #process(float[])
      * @see #setGain(float)
      * @see #isFinished()
      */
-    public void process(float[] samples, int sampleCount) {
-        for (int i = 0; i < sampleCount; i++) {
-            if (currentGain < targetGain) {
-                currentGain = Math.min(targetGain, currentGain + FADE_SPEED);
-            } else if (currentGain > targetGain) {
-                currentGain = Math.max(targetGain, currentGain - FADE_SPEED);
+    public void process(float[] samples, int sampleCount) throws AudioProcessingException {
+        try {
+            // Validate input array
+            if (samples == null) {
+                logger.error("Audio samples array is null");
+                throw new AudioProcessingException("Audio samples array cannot be null");
             }
-            samples[i] *= currentGain;
+            
+            // Validate sample count
+            if (sampleCount < 0) {
+                logger.error("Invalid sample count: {} (must be >= 0)", sampleCount);
+                throw new AudioProcessingException("Sample count cannot be negative: " + sampleCount);
+            }
+            
+            // Validate array bounds
+            if (sampleCount > samples.length) {
+                logger.error("Sample count {} exceeds array length {}", sampleCount, samples.length);
+                throw new AudioProcessingException(
+                    String.format("Sample count (%d) exceeds array length (%d)", sampleCount, samples.length)
+                );
+            }
+            
+            // Process samples with gain
+            for (int i = 0; i < sampleCount; i++) {
+                // Validate individual sample value
+                if (Float.isNaN(samples[i])) {
+                    logger.warn("NaN sample detected at index {}, skipping", i);
+                    continue;
+                }
+                
+                if (Float.isInfinite(samples[i])) {
+                    logger.warn("Infinite sample detected at index {}, clamping to [-1.0, 1.0]", i);
+                    samples[i] = samples[i] > 0 ? 1.0f : -1.0f;
+                }
+                
+                // Update gain towards target
+                if (currentGain < targetGain) {
+                    currentGain = Math.min(targetGain, currentGain + FADE_SPEED);
+                } else if (currentGain > targetGain) {
+                    currentGain = Math.max(targetGain, currentGain - FADE_SPEED);
+                }
+                
+                // Apply gain to sample
+                samples[i] *= currentGain;
+                
+                // Ensure output stays in valid range
+                samples[i] = Math.max(-1.0f, Math.min(1.0f, samples[i]));
+            }
+            
+            logger.trace("Processed {} samples with gain", sampleCount);
+            
+        } catch (AudioProcessingException e) {
+            throw e;
+        } catch (ArrayIndexOutOfBoundsException e) {
+            logger.error("Array index out of bounds while processing: {}", e.getMessage());
+            throw new AudioProcessingException("Array size mismatch during gain processing", e);
+        } catch (Exception e) {
+            logger.error("Unexpected error processing samples: {}", e.getMessage());
+            throw new AudioProcessingException("Failed to process audio samples", e);
         }
     }
 
@@ -306,14 +406,28 @@ public class GainProcessor implements AudioProcessor {
      * @param samples array of audio samples to process. All elements will be processed.
      *                Samples are modified in-place.
      *
+     * @throws AudioProcessingException if samples array is null or processing fails
      * @throws NullPointerException if samples array is null
      *
      * @see #process(float[], int)
      * @see AudioProcessor#process(float[])
      */
     @Override
-    public void process(float[] samples) {
-        process(samples, samples.length);
+    public void process(float[] samples) throws AudioProcessingException {
+        try {
+            if (samples == null) {
+                logger.error("Audio samples array is null");
+                throw new AudioProcessingException("Audio samples array cannot be null");
+            }
+            
+            process(samples, samples.length);
+            
+        } catch (AudioProcessingException e) {
+            throw e;
+        } catch (Exception e) {
+            logger.error("Unexpected error in process(float[]): {}", e.getMessage());
+            throw new AudioProcessingException("Failed to process audio samples", e);
+        }
     }
 
     /**

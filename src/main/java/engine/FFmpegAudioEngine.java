@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 import processors.GainProcessor;
 import utils.AudioUtils;
 import utils.FFmpegAudioDecoder;
+import exceptions.*;
 
 import javax.sound.sampled.*;
 import java.util.Arrays;
@@ -121,44 +122,72 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
      * <p>The playback runs asynchronously on a separate thread. Audio data is continuously
      * decoded, processed for gain, converted to PCM bytes, and written to the system audio output.
      *
-     * @throws Exception if the audio file cannot be opened, audio format is not supported,
-     *                   or the system audio line cannot be obtained
+     * @throws AudioFileException if the audio file cannot be opened or accessed
+     * @throws AudioDecodingException if audio decoding cannot be initialized
+     * @throws AudioPlaybackException if the playback system fails to initialize
+     * @throws AudioException for other audio-related errors
      * @see #pause()
      * @see #resume()
      * @see #stop()
      */
     @Override
-    public void play() throws Exception {
+    public void play() throws AudioException {
 
         logger.info("Start playing: {}", filePath);
         if (isPlaying.get()) {
-            logger.debug("Playback already active, stoping...");
+            logger.debug("Playback already active, stopping...");
             internalStop();
         }
 
-        decoder = new FFmpegAudioDecoder();
-        decoder.open(filePath);
+        try {
+            decoder = new FFmpegAudioDecoder();
+            
+            try {
+                decoder.open(filePath);
+            } catch (Exception e) {
+                logger.error("Failed to open audio file: {}", e.getMessage());
+                throw new AudioFileException("Failed to open audio file: " + filePath, e);
+            }
 
-        // Output compatible: 16 bits, Signed Integer (2 bytes por frame por canal = 4 bytes/frame)
-        AudioFormat format = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, 44100, 16, 2, 4, 44100, false);
-        DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
+            // Output compatible: 16 bits, Signed Integer (2 bytes per frame per channel = 4 bytes/frame)
+            AudioFormat format = new AudioFormat(AudioFormat.Encoding.PCM_SIGNED, 44100, 16, 2, 4, 44100, false);
+            DataLine.Info info = new DataLine.Info(SourceDataLine.class, format);
 
-        this.outputLine = (SourceDataLine) AudioSystem.getLine(info);
-        // Using small buffer for low latency (32KB approx)
-        this.outputLine.open(format, 32768);
-        this.outputLine.start();
+            try {
+                this.outputLine = (SourceDataLine) AudioSystem.getLine(info);
+                if (outputLine == null) {
+                    throw new AudioPlaybackException("No audio output line available");
+                }
+                // Using small buffer for low latency (32KB approx)
+                this.outputLine.open(format, 32768);
+                this.outputLine.start();
+            } catch (LineUnavailableException e) {
+                logger.error("Audio output line not available: {}", e.getMessage());
+                throw new AudioPlaybackException("Audio device not available or already in use", e);
+            }
 
-        logger.debug("Audio line open and started");
+            logger.debug("Audio line open and started");
 
-        isPlaying.set(true);
-        isPaused.set(false);
+            isPlaying.set(true);
+            isPaused.set(false);
 
-        playbackThread = new Thread(this::playbackLoop);
-        playbackThread.setPriority(Thread.MAX_PRIORITY);
-        playbackThread.setName("AudioPlaybackThread");
-        playbackThread.start();
+            playbackThread = new Thread(this::playbackLoop);
+            playbackThread.setPriority(Thread.MAX_PRIORITY);
+            playbackThread.setName("AudioPlaybackThread");
+            playbackThread.start();
 
-        logger.info("AudioPlaybackThread started");
+            logger.info("AudioPlaybackThread started");
+            
+        } catch (AudioException e) {
+            // Re-throw audio exceptions as-is
+            internalStop();
+            throw e;
+        } catch (Exception e) {
+            // Wrap unexpected exceptions
+            logger.error("Unexpected error during playback initialization: {}", e.getMessage());
+            internalStop();
+            throw new AudioPlaybackException("Failed to initialize playback", e);
+        }
     }
 
     /**
@@ -218,7 +247,7 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
      * @see #play()
      */
     @Override
-    public void stop() {
+    public void stop() throws AudioProcessingException {
         logger.info("Stoping playback");
         if (!isPlaying.get()) return;
 
@@ -356,7 +385,7 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
      * @see #getVolume()
      */
     @Override
-    public void setVolume(float volume) {
+    public void setVolume(float volume) throws AudioProcessingException {
         if (gainProcessor != null) {
             gainProcessor.setGain(volume);
             logger.debug("Volume set at: {}%", volume * 100);
@@ -410,16 +439,22 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
      * </ul>
      *
      * @param seconds the seek position in seconds from the start of the file
-     * @throws IllegalArgumentException if seconds is negative or beyond the file duration
+     * @throws AudioSeekException if seek fails or decoder is not initialized
      * @see #getDuration()
      * @see FFmpegAudioDecoder#seek(double)
      */
     @Override
-    public void seek(double seconds) {
+    public void seek(double seconds) throws AudioSeekException {
         logger.info("Seek called to: {} seconds", seconds);
+        
         if (decoder == null || outputLine == null) {
-            logger.warn("Seek could not be done: decoder or outputLine is null");
-            return;
+            logger.error("Cannot seek: decoder or outputLine is null");
+            throw new AudioSeekException("Cannot seek: audio engine not properly initialized");
+        }
+
+        if (seconds < 0) {
+            logger.error("Invalid seek position: {} (must be >= 0)", seconds);
+            throw new AudioSeekException("Seek position cannot be negative: " + seconds);
         }
 
         try {
@@ -440,12 +475,16 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
             isPaused.set(false);
             outputLine.start();
 
-            logger.info("Seek completed succesfuly");
+            logger.info("Seek completed successfully");
 
-        } catch (Exception e) {
-            logger.error("Error during seek: {}", e.getMessage());
-            e.printStackTrace();
+        } catch (AudioSeekException e) {
+            // Re-throw audio seek exceptions
             isPaused.set(false);
+            throw e;
+        } catch (Exception e) {
+            logger.error("Error during seek to {} seconds: {}", seconds, e.getMessage());
+            isPaused.set(false);
+            throw new AudioSeekException("Seek operation failed for position " + seconds + " seconds", e);
         }
     }
 
@@ -473,22 +512,39 @@ public class FFmpegAudioEngine implements FormatAudioEngine {
      * <p>After calling this method, the engine should not be used. A new instance
      * should be created to play another audio file.
      *
+     * @throws AudioResourceException if an error occurs during resource cleanup
      * @see #play()
      * @see #stop()
      */
     @Override
-    public void close() {
+    public void close() throws AudioResourceException {
         logger.debug("Closing FFmpegAudioEngine");
-        internalStop();
-        if (playbackThread != null && playbackThread.isAlive()) {
-            playbackThread.interrupt();
-            try {
-                playbackThread.join(500);
+        
+        try {
+            internalStop();
+            
+            if (playbackThread != null && playbackThread.isAlive()) {
+                playbackThread.interrupt();
+                try {
+                    playbackThread.join(500);
+                    if (playbackThread.isAlive()) {
+                        logger.warn("Playback thread did not terminate within timeout");
+                    }
+                } catch (InterruptedException e) {
+                    logger.warn("Interrupted while waiting for playback thread to terminate");
+                    Thread.currentThread().interrupt();
+                    throw new AudioResourceException("Thread interruption during close", e);
+                }
             }
-            catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            
+            logger.info("FFmpegAudioEngine closed successfully");
+            
+        } catch (AudioResourceException e) {
+            // Re-throw audio resource exceptions
+            throw e;
+        } catch (Exception e) {
+            logger.error("Unexpected error during close: {}", e.getMessage());
+            throw new AudioResourceException("Failed to properly close audio engine resources", e);
         }
-        logger.info("FFmpegAudioEngine closed successfully");
     }
 }

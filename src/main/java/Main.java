@@ -1,9 +1,11 @@
+import exceptions.AudioFileException;
+import exceptions.AudioProcessingException;
 import utils.Player;
 
 import javax.sound.sampled.*;
 
 public class Main {
-    public static void main(String[] args) {
+    public static void main(String[] args) throws AudioProcessingException, AudioFileException {
         Player player = new Player();
 
         // Run Engine in a separate Thread
