@@ -1,5 +1,6 @@
 package processors;
 
+import exceptions.AudioProcessingException;
 import utils.AudioUtils;
 
 /**
@@ -249,5 +250,5 @@ public interface AudioProcessor {
      * @see GainProcessor#process(float[])
      * @see AudioUtils#floatsToBytes(float[], byte[], int, int, boolean)
      */
-    void process(float[] samples);
+    void process(float[] samples) throws AudioProcessingException;
 }

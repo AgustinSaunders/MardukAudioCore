@@ -1,5 +1,7 @@
 package engine;
 
+import exceptions.*;
+
 /**
  * Interface defining the contract for audio format engines.
  *
@@ -109,14 +111,17 @@ public interface FormatAudioEngine extends AutoCloseable {
      *   <li>Insufficient system resources are available</li>
      * </ul>
      *
-     * @throws Exception if an error occurs during initialization or playback startup
+     * @throws AudioFileException if the audio file cannot be loaded or accessed
+     * @throws AudioPlaybackException if the playback system fails to initialize
+     * @throws AudioDecodingException if audio decoding cannot be set up
+     * @throws AudioException for other audio-related errors
      *
      * @see #pause()
      * @see #resume()
      * @see #stop()
      * @see #isPlaying()
      */
-    void play() throws Exception;
+    void play() throws AudioException;
 
     /**
      * Pauses the current audio playback.
@@ -195,7 +200,7 @@ public interface FormatAudioEngine extends AutoCloseable {
      * @see #pause()
      * @see #isPlaying()
      */
-    void stop();
+    void stop() throws AudioProcessingException;
 
     /**
      * Sets the audio volume/gain for playback.
@@ -226,7 +231,7 @@ public interface FormatAudioEngine extends AutoCloseable {
      * @see #getVolume()
      * @see #play()
      */
-    void setVolume(float volume);
+    void setVolume(float volume) throws AudioProcessingException;
 
     /**
      * Gets the current audio volume/gain level.
@@ -274,12 +279,12 @@ public interface FormatAudioEngine extends AutoCloseable {
      * This method can be safely called multiple times without harm.
      * Calling close() on an already-closed engine should have no effect.
      *
-     * @throws Exception if an error occurs during resource cleanup
+     * @throws AudioResourceException if an error occurs during resource cleanup
      *
      * @see AutoCloseable
      */
     @Override
-    void close() throws Exception;
+    void close() throws AudioResourceException;
 
     /**
      * Checks if audio is currently playing.
@@ -360,12 +365,14 @@ public interface FormatAudioEngine extends AutoCloseable {
      *
      * @param seconds the target seek position in seconds from the start of the file.
      *                Must be &gt;= 0 and &lt;= file duration.
+     * 
+     * @throws AudioSeekException if the seek operation fails or position is invalid
      *
      * @see #getDuration()
      * @see #play()
      * @see #pause()
      */
-    void seek(double seconds);
+    void seek(double seconds) throws AudioSeekException;
 
     /**
      * Gets the total duration of the audio file in seconds.
