@@ -369,11 +369,11 @@ public class FFmpegAudioDecoder implements AutoCloseable {
             int ret = av_seek_frame(formatContext, audioStreamIndex, ts, AVSEEK_FLAG_BACKWARD);
 
             if (ret < 0) {
-                logger.warn("Seek failed with AVSEEK_FLAG_BACKWARD, trying with AVSEEK_FLAG_ANY");
+                logger.debug("Seek failed with AVSEEK_FLAG_BACKWARD, trying with AVSEEK_FLAG_ANY");
                 ret = av_seek_frame(formatContext, audioStreamIndex, ts, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
 
                 if (ret < 0) {
-                    logger.warn("Seek failed again, trying global seek");
+                    logger.debug("Seek failed again, trying global seek");
                     long targetMicroseconds = (long) (seconds * AV_TIME_BASE);
                     ret = av_seek_frame(formatContext, -1, targetMicroseconds, AVSEEK_FLAG_BACKWARD | AVSEEK_FLAG_ANY);
                     
